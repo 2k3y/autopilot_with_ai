@@ -1,0 +1,6 @@
+joblib==1.5.3
+tensorflow==2.15.0
+opencv-python
+numpy
+inavmspapi
+agrotechsimapi
