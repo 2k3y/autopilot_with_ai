@@ -167,10 +167,21 @@ def main():
     send_waypoints_in_batches(control, waypoints)
 
     print("\nВЗЛЁТ...")
+    # Шаг 1: Газ на минимум (1000), тумблер Арминга включен (2000)
+    control.send_RAW_RC([1500, 1500, 1000, 1500, 2000, 1000, 1000])
+    time.sleep(2.0)  # Даем симулятору 2 секунды, чтобы пропеллеры завелись
+
+    # Шаг 2: Моторы работают, даем газ для набора высоты (1900)
     control.send_RAW_RC([1500, 1500, 1900, 1500, 2000, 1000, 1000])
+
     while True:
         alt = get_altitude(sim_client)
-        if alt and alt >= (config.ALTITUDE_M - 2): break
+        # Печатаем высоту, чтобы видеть, что дрон реально летит вверх
+        if alt is not None:
+            print(f"Текущая высота: {alt:.1f}м", end='\r')
+            if alt >= (config.ALTITUDE_M - 2):
+                print("\nНужная высота достигнута!")
+                break
         time.sleep(0.1)
 
     # 4. Полет
