@@ -1,10 +1,14 @@
 import time
+import os
 import math
 import argparse
 import struct
 import cv2
 import numpy as np
 import tensorflow as tf
+import psycopg2
+from psycopg2 import Binary
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 # Импортируем наш файл настроек
 import config
@@ -75,6 +79,74 @@ def analyze_frame(frame, model):
     return probability, (start_x, start_y, min_dim)
 
 
+# --- Инициализация БД ---
+def init_db():
+    # Фикс кодировки для Windows, чтобы видеть ошибки на английском
+    os.environ["PGCLIENTENCODING"] = "utf-8"
+
+    # --- ШАГ 1: Подключение к системной базе для создания нашей ---
+    try:
+        setup_conn = psycopg2.connect(
+            host=config.DB_HOST,
+            port=config.DB_PORT,
+            dbname="postgres",  # Всегда подключаемся к дефолтной базе сначала!
+            user=config.DB_USER,
+            password=config.DB_PASS
+        )
+        # Обязательное условие для команды CREATE DATABASE
+        setup_conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        setup_cursor = setup_conn.cursor()
+
+        # Проверяем, существует ли наша база из конфига
+        setup_cursor.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{config.DB_NAME}'")
+        exists = setup_cursor.fetchone()
+
+        if not exists:
+            print(f"  ⏳ Создаем новую базу данных '{config.DB_NAME}'...")
+            setup_cursor.execute(f"CREATE DATABASE {config.DB_NAME}")
+
+        setup_cursor.close()
+        setup_conn.close()
+
+    except Exception as e:
+        print(f"  ❌ Ошибка при создании БД: {e}")
+        return None
+
+    # --- ШАГ 2: Подключение к нашей целевой базе и создание таблиц ---
+    try:
+        conn = psycopg2.connect(
+            host=config.DB_HOST,
+            port=config.DB_PORT,
+            dbname=config.DB_NAME,  # Теперь подключаемся к db_bsp
+            user=config.DB_USER,
+            password=config.DB_PASS
+        )
+        cursor = conn.cursor()
+
+        # Создаем таблицу, если ее еще нет
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS empty_areas (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                lat DOUBLE PRECISION,
+                lon DOUBLE PRECISION,
+                confidence REAL,
+                image BYTEA
+            )
+        """)
+
+
+        cursor.execute("TRUNCATE TABLE empty_areas RESTART IDENTITY;")
+
+        conn.commit()
+        print(f"  ✅ База данных '{config.DB_NAME}' подключена, таблицы готовы")
+        return conn
+
+    except Exception as e:
+        print(f"  ❌ Ошибка подключения к рабочей БД: {e}")
+        return None
+
+
 # --- ПОСТРОЕНИЕ МАРШРУТА (ДАННЫЕ ИЗ CONFIG) ---
 def build_snake_waypoints(home_lat, home_lon):
     wps = []
@@ -137,6 +209,7 @@ def main():
 
     print("=" * 60 + f"\nСТАРТ МИССИИ ({config.ALTITUDE_M}м)\n" + "=" * 60)
 
+    db_conn = init_db()
     # 1. Загрузка нейросети
     try:
         model = tf.keras.models.load_model(config.MODEL_PATH)
@@ -187,6 +260,7 @@ def main():
     # 4. Полет
     control.send_RAW_RC([1500, 1500, 1500, 1500, 2000, 1000, 2000])
     mission_start = time.time()
+    last_db_save = 0
     precise_landing = False
 
     while True:
@@ -205,6 +279,34 @@ def main():
                 else:
                     label, color = f"EMPTY {(1 - prob) * 100:.0f}%", (0, 0, 255)
                     problem_points.append(elapsed)
+
+                    # --- СОХРАНЕНИЕ В БД ---
+                    # Сохраняем не чаще, чем раз в 3 секунды
+                    if db_conn and (elapsed - last_db_save > 3.0):
+                        last_db_save = elapsed
+                        # Получаем текущие координаты (можно использовать get_physics_xy для симулятора,
+                        # но get_gps ближе к реальному дрону)
+                        lat, lon = get_gps(control)
+
+                        # Если GPS пока нет, используем нули
+                        lat = lat if lat else 0.0
+                        lon = lon if lon else 0.0
+
+                        # Кодируем кадр в JPG, чтобы он занимал меньше места
+                        _, buffer = cv2.imencode('.jpg', frame)
+                        img_bytes = buffer.tobytes()
+
+                        try:
+                            cursor = db_conn.cursor()
+                            cursor.execute("""
+                                INSERT INTO empty_areas (lat, lon, confidence, image)
+                                VALUES (%s, %s, %s, %s)
+                            """, (lat, lon, float(1 - prob), Binary(img_bytes)))
+                            db_conn.commit()
+                            print(f"\n[БД] Сохранен пустой участок: {lat}, {lon}")
+                        except Exception as e:
+                            print(f"\n[БД] Ошибка записи: {e}")
+                            db_conn.rollback() # Откатываем транзакцию при ошибке
 
                 cv2.rectangle(frame, (bx, by), (bx + b_size, by + b_size), color, 3)
                 cv2.putText(frame, label, (bx, by - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
@@ -244,6 +346,8 @@ def main():
     print(f"\nМИССИЯ ЗАВЕРШЕНА! Ошибок: {len(problem_points)}")
     cv2.destroyAllWindows()
     tcp_transmitter.disconnect()
+    if db_conn:
+        db_conn.close()
 
 
 if __name__ == "__main__":
