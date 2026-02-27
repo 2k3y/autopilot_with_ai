@@ -1,5 +1,5 @@
 # --- НАСТРОЙКИ СВЯЗИ ---
-INAV_HOST = "127.0.0.1"
+INAV_HOST = "192.168.0.172"
 INAV_PORT = 5762
 SIM_PORT = 8080
 
@@ -24,10 +24,3 @@ LAT_STEP = 3000
 LANDING_ALT_THRESHOLD = 15.0  # Высота начала точной посадки
 BASE_DIST_THRESHOLD = 50.0    # Дистанция до базы для захвата
 PID_P_GAIN = 150              # Чувствительность удержания позиции
-
-# --- НАСТРОЙКИ БД PostgreSQL ---
-DB_HOST = "127.0.0.1"
-DB_PORT = "5432"
-DB_NAME = "db_bsp"
-DB_USER = "postgres"  # Ваш пользователь
-DB_PASS = "1312"     # Ваш пароль

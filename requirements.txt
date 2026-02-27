@@ -4,4 +4,3 @@ numpy<2.0.0
 opencv-python
 inavmspapi
 agrotechsimapi
-psycopg2-binary
