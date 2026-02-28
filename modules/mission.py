@@ -8,8 +8,12 @@ from modules.telemetry import get_altitude, get_physics_xy, get_yaw, get_gps
 from modules.ai_logic import analyze_frame
 from modules.navigation import build_snake_waypoints, send_waypoints_in_batches
 
+# --- ДОБАВЛЕНО: Импортируем нашу функцию для сохранения в БД ---
+from modules.database import save_empty_area
 
-def run_full_mission(sim_client, control, tcp_transmitter, model, recharge_every):
+
+# --- ДОБАВЛЕНО: db_conn в параметрах ---
+def run_full_mission(sim_client, control, tcp_transmitter, model, recharge_every, db_conn):
     """
     Выполняет полную миссию: калибровка, полет по змейке с дозарядками и анализ ИИ.
     """
@@ -33,6 +37,9 @@ def run_full_mission(sim_client, control, tcp_transmitter, model, recharge_every
     problem_points = []
     resume_lat, resume_lon = None, None
     segment_num = 1
+
+    # --- ДОБАВЛЕНО: Глобальный таймер для БД ---
+    last_db_save = 0
 
     # 2. Главный цикл миссии (с перезарядками)
     while True:
@@ -79,6 +86,16 @@ def run_full_mission(sim_client, control, tcp_transmitter, model, recharge_every
                     else:
                         label, color = f"EMPTY {(1 - prob) * 100:.0f}%", (0, 0, 255)
                         problem_points.append(elapsed)
+
+                        # --- ДОБАВЛЕНО: Магия сохранения в PostgreSQL ---
+                        if db_conn and (elapsed - last_db_save > 3.0):
+                            last_db_save = elapsed
+                            lat, lon = get_gps(control)
+                            lat = lat if lat else 0.0
+                            lon = lon if lon else 0.0
+
+                            # Отправляем фото и данные в БД
+                            save_empty_area(db_conn, lat, lon, prob, frame)
 
                     cv2.rectangle(frame, (bx, by), (bx + b_size, by + b_size), color, 3)
                     cv2.putText(frame, label, (bx, by - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
